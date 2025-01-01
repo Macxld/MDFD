@@ -7,7 +7,6 @@ from functools import partial
 import numpy as np
 from tqdm import tqdm
 
-from models.DSAM import MSSA_Fusion
 
 
 def _warmup_beta(linear_start, linear_end, n_timestep, warmup_frac):
@@ -255,8 +254,7 @@ class GaussianDiffusion(nn.Module):
         x: input image that you want to get features
         t: time step
         '''
-        x_start1,x_start2,x_start3 = x['img'],x['vis'],x['ir']
-        x_start = self.mssa_fusion(x_start2,x_start3,x_start1)
+        x_start = x['img']
 
         [b, c, h, w] = x_start.shape
         continuous_sqrt_alpha_cumprod = torch.FloatTensor(
