@@ -335,6 +335,35 @@ class mixblock(nn.Module):
 def upsample(x, h, w):
     return F.interpolate(x, size=[h, w], mode='bicubic', align_corners=True)
 
+class HaarWaveletTransform(nn.Module):
+    def __init__(self):
+        super(HaarWaveletTransform, self).__init__()
+        # Haar filters for LL, LH, HL, HH
+        self.register_buffer('LL', torch.tensor([[1, 1], [1, 1]]) / 2)
+        self.register_buffer('LH', torch.tensor([[-1, -1], [1, 1]]) / 2)
+        self.register_buffer('HL', torch.tensor([[-1, 1], [-1, 1]]) / 2)
+        self.register_buffer('HH', torch.tensor([[1, -1], [-1, 1]]) / 2)
+
+    def forward(self, x):
+        filters = torch.stack([self.LL, self.LH, self.HL, self.HH]).unsqueeze(1)  # [4, 1, 2, 2]
+        filters = filters.to(x.device)
+
+        # Apply to each channel
+        out = []
+        for c in range(x.shape[1]):
+            x_c = x[:, c:c+1, :, :]
+            x_c_out = F.conv2d(x_c, filters, stride=2, padding=0)  # [B, 4, H/2, W/2]
+            out.append(x_c_out)
+        out = torch.cat(out, dim=1)  # [B, 4*C, H/2, W/2]
+
+        # Split low (LL) and high (LH+HL+HH)
+        C = x.shape[1]
+        low = out[:, 0::4, :, :]  # LL of each channel
+        high = out[:, 1::4, :, :] + out[:, 2::4, :, :] + out[:, 3::4, :, :]  # sum LH+HL+HH
+        return low, high
+
+
+
 class frBlock(nn.Module):
     def __init__(self,
                  ms_channels,
@@ -350,31 +379,41 @@ class frBlock(nn.Module):
         self.raw_alpha.data.fill_(0)
         self.conv1 = nn.Conv2d(n_feat*2,n_feat,3,1,1,bias=False)
         self.conv2 = nn.Conv2d(n_feat,n_feat,1,1,0,bias=False)
+        self.wavelet = HaarWaveletTransform()
 
         self.calayer = CALayer(n_feat)
         self.get_edge = WTconv2d(n_feat, n_feat)
 
     def forward(self,HR,LR,iteration):
         h1 = self.down(LR)
-        high1 = LR - F.interpolate(h1, size=LR.size()[-2:], mode='bilinear', align_corners=True)
         h2 = self.down(HR)
-        high2 = HR - F.interpolate(h2, size=LR.size()[-2:], mode='bilinear', align_corners=True)
-        high1=high1+self.ega(high1,high1)*self.raw_alpha
-        high2=high2+self.ega(high2,high2)*self.raw_alpha
-        x1=self.decoder_low(h1)
-        x2=self.decoder_low(h2)
+        w1_low, w1_high = self.wavelet(LR)
+        w2_low, w2_high = self.wavelet(HR)
+        w1_high_up = F.interpolate(w1_high, size=LR.size()[-2:], mode='bilinear', align_corners=True)
+        w2_high_up = F.interpolate(w2_high, size=HR.size()[-2:], mode='bilinear', align_corners=True)
+        h1 = h1 + w1_low
+        h2 = h2 + w2_low
+        high1 = abs(LR - F.interpolate(h1, size=LR.size()[-2:], mode='bilinear', align_corners=True))
+        high2 = abs(HR - F.interpolate(h2, size=HR.size()[-2:], mode='bilinear', align_corners=True))
+        high1 = high1 + w1_high_up
+        high2 = high2 + w2_high_up
+        high1 = high1 + self.ega(high1, high1) * self.raw_alpha
+        high2 = high2 + self.ega(high2, high2) * self.raw_alpha
+        x1 = self.decoder_low(h1)
+        x2 = self.decoder_low(h2)
         x3 = F.interpolate(x1, size=LR.size()[-2:], mode='bilinear', align_corners=True)
         x4 = F.interpolate(x2, size=HR.size()[-2:], mode='bilinear', align_corners=True)
         high1 = self.decoder_high(high1)
         high2 = self.decoder_high(high2)
-        high = high1 - high2
-        low = x3 - x4
-        x = self.calayer(self.conv1(torch.cat([low, high], dim=1))) + HR + LR
-        y = self.get_edge(x)
-        y = y + LR
-
+        high = abs(high1 - high2)
+        low = abs(x3 - x4)
+        x = self.conv1(torch.cat([low, high], dim=1)) + LR
+        y = self.get_edge(x) + LR
         return y
 
+        
+        
+        
 
 
 class DepthwiseSeparableconv2d(nn.Module):
@@ -438,7 +477,7 @@ class Fusion_Head(nn.Module):
         self.conv2 = nn.Conv2d(in_channels=128, out_channels=64, kernel_size=3, padding=1)
         self.DSconv = DepthwiseSeparableconv2d(64,64)
         self.fr_blocks = nn.ModuleList([frBlock(64, 64) for i in range(9)])
-        self.cgafusion = AWFM(64, 8)
+        self.fusion = AWFM(64, 8)
 
     def forward(self, feats, data):
 
@@ -451,11 +490,7 @@ class Fusion_Head(nn.Module):
             lvl = 0
             tar1 = self.fr_blocks[i](a, image_vis)  # tar1 2 64 256 256
             tar2 = self.fr_blocks[i](a, image_ir)  # 网络中A-BLOCK，tar11 2 64 256 256
-            ir_mask =  self.MEEM(image_ir)
-            tar1 = self.conv2(torch.cat((ir_mask,tar1),dim=1))
-            tar2 = self.conv2(torch.cat((ir_mask,tar2),dim=1))
-
-            a = self.cgafusion(tar1, tar2)
+            a = self.fusion(tar1, tar2)
             a = self.rc_conv(a)
 
 
