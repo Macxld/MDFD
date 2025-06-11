@@ -489,7 +489,7 @@ class Fusion_Head(nn.Module):
         for i in range(len(self.fr_blocks)):
             lvl = 0
             tar1 = self.fr_blocks[i](a, image_vis)  # tar1 2 64 256 256
-            tar2 = self.fr_blocks[i](a, image_ir)  # 网络中A-BLOCK，tar11 2 64 256 256
+            tar2 = self.fr_blocks[i](a, image_ir)  
             a = self.fusion(tar1, tar2)
             a = self.rc_conv(a)
 
