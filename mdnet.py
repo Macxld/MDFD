@@ -213,14 +213,14 @@ class Fusion_module(nn.Module):
         _, c, _, _ = x1.shape
         input = torch.cat([x1, x2], dim=1)
         recal_w = self.Recalibrate(input)
-        recal_input = recal_w * input ## 先对特征进行一步自校正
+        recal_input = recal_w * input ## 
         recal_input = recal_input + input
         x1, x2 = torch.split(recal_input, c, dim =1)
-        agg_input = self.channel_agg(recal_input) ## 进行特征压缩 因为只计算一个特征的权重
-        local_w = self.local_att(agg_input)  ## 局部注意力 即spatial attention
-        global_w = self.global_att(agg_input) ## 全局注意力 即channel attention
-        w = self.sigmoid(local_w * global_w) ## 计算特征x1的权重
-        xo = w * x1 + (1 - w) * x2 ## fusion results ## 特征聚合
+        agg_input = self.channel_agg(recal_input) ## 
+        local_w = self.local_att(agg_input)  ## 
+        global_w = self.global_att(agg_input) ## 
+        w = self.sigmoid(local_w * global_w) ## 
+        xo = w * x1 + (1 - w) * x2 ##
         return xo
 
 class DSFM(nn.Module):
